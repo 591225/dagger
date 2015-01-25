@@ -16,12 +16,19 @@
  */
 package dagger.internal.codegen;
 
+import com.google.common.base.Joiner;
+import com.squareup.javapoet.AnnotationSpec;
+import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.Types;
+import dagger.internal.Binding;
 import dagger.internal.Keys;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.AnnotationValueVisitor;
@@ -40,10 +47,22 @@ import javax.lang.model.type.TypeVariable;
 import javax.lang.model.util.SimpleAnnotationValueVisitor6;
 import javax.lang.model.util.SimpleTypeVisitor6;
 
+import static com.squareup.javapoet.Types.arrayOf;
+import static com.squareup.javapoet.Types.parameterizedType;
+import static com.squareup.javapoet.Types.subtypeOf;
+
 /**
  * Utilities for handling types in annotation processors
  */
 final class Util {
+  public static final Type SET_OF_BINDINGS = parameterizedType(Set.class,
+      parameterizedType(Binding.class, subtypeOf(Object.class)));
+  public static final Type ARRAY_OF_CLASS =
+      arrayOf(parameterizedType(Class.class, subtypeOf(Object.class)));
+  public static final AnnotationSpec UNCHECKED = AnnotationSpec.builder(SuppressWarnings.class)
+      .addMember("value", "$S", "unchecked")
+      .build();
+
   private Util() {
   }
 
@@ -64,12 +83,10 @@ final class Util {
     return Keys.isPlatformType(supertype.toString()) ? null : supertype;
   }
 
-  /** Returns a fully qualified class name to complement {@code type}. */
-  public static String adapterName(TypeElement typeElement, String suffix) {
-    StringBuilder builder = new StringBuilder();
-    rawTypeToString(builder, typeElement, '$');
-    builder.append(suffix);
-    return builder.toString();
+  /** Returns a class name to complement {@code type}. */
+  public static ClassName adapterName(ClassName type, String suffix) {
+    return ClassName.get(type.packageName(),
+        Joiner.on('$').join(type.simpleNames()) + suffix);
   }
 
   /** Returns a string for {@code type}. Primitive types are always boxed. */
@@ -153,6 +170,33 @@ final class Util {
       @Override protected Void defaultAction(TypeMirror typeMirror, Void v) {
         throw new UnsupportedOperationException(
             "Unexpected TypeKind " + typeMirror.getKind() + " for "  + typeMirror);
+      }
+    }, null);
+  }
+
+  /** Returns a string for {@code type}. Primitive types are always boxed. */
+  public static Type injectableType(TypeMirror type) {
+    return type.accept(new SimpleTypeVisitor6<Type, Void>() {
+      @Override public Type visitPrimitive(PrimitiveType primitiveType, Void v) {
+        return box(primitiveType);
+      }
+
+      @Override public Type visitError(ErrorType errorType, Void v) {
+        // Error type found, a type may not yet have been generated, but we need the type
+        // so we can generate the correct code in anticipation of the type being available
+        // to the compiler.
+
+        // Paramterized types which don't exist are returned as an error type whose name is "<any>"
+        if ("<any>".equals(errorType.toString())) {
+          throw new CodeGenerationIncompleteException(
+              "Type reported as <any> is likely a not-yet generated parameterized type.");
+        }
+
+        return ClassName.bestGuess(errorType.toString());
+      }
+
+      @Override protected Type defaultAction(TypeMirror typeMirror, Void v) {
+        return Types.get(typeMirror);
       }
     }, null);
   }
